@@ -1,4 +1,6 @@
-# 规划智库 Backend
+# 规划智库后端
+
+> 项目迭代：V11 · 需求基线：[PRD V1.1](../规划行业AI知识助手_PRD_v1.1.md)
 
 后端采用 FastAPI + SQLite，支持项目库/通用库隔离、结构化资料解析、联网搜索入库、SSE 对话和引用溯源。
 
@@ -21,10 +23,6 @@ cp .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
 
-测试：
-
-```bash
-INGESTION_MODE=sync ALLOW_STUB_EMBEDDING=1 pytest -q
-```
+测试与构建命令、验证结果统一记录在[根目录 README](../README.md#验证)。
 
 运行时凭证通过 `/api/provider-configs` 保存。百度 OCR 凭证保存及云端调用需要风险确认；第三方密钥不应提交到版本库。
