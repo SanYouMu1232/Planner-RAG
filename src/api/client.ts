@@ -5,13 +5,17 @@ import { readEventStream } from './sse'
 
 const BASE = (import.meta.env?.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) { super(message) }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   const resp = await fetch(`${BASE}${url}`, { ...init, headers })
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}))
-    throw new Error((body as any).detail || (body as any).message || `HTTP ${resp.status}`)
+    throw new ApiError((body as any).detail || (body as any).message || `HTTP ${resp.status}`, resp.status)
   }
   return resp.json() as Promise<T>
 }

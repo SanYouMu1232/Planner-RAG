@@ -9,10 +9,11 @@ import StatusBadge from './StatusBadge'
 interface Props {
   document: KnowledgeDocument | null
   citation?: Citation | null
+  recovered?: boolean
   onClose: () => void
 }
 
-export default function DocumentDrawer({ document: doc, citation, onClose }: Props) {
+export default function DocumentDrawer({ document: doc, citation, recovered = false, onClose }: Props) {
   const [loading, setLoading] = useState(false)
   const [chunks, setChunks] = useState<api.DocumentChunk[]>([])
   const [error, setError] = useState('')
@@ -145,7 +146,7 @@ export default function DocumentDrawer({ document: doc, citation, onClose }: Pro
           <div className="flex items-center gap-2 mb-4">
             <FileText size={16} className="text-foreground-muted" />
             <h3 className="text-sm font-semibold text-foreground">原文内容</h3>
-            <span className="text-xs text-foreground-muted" role="status">{!ready ? '（正在加载原文）' : citation ? location ? `（已定位${location.match === 'section' ? '相关章节' : `引用 [${citation.number}]`}）` : '（未匹配到引用位置，显示全文）' : '（真实切片预览）'}</span>
+            <span className="text-xs text-foreground-muted" role="status" title={recovered ? '旧资料已删除；这里显示重传资料中唯一匹配的引用文字，请核对版本。' : undefined}>{!ready ? '（正在加载原文）' : citation ? location ? recovered ? `（重传资料匹配 [${citation.number}]）` : `（已定位${location.match === 'section' ? '相关章节' : `引用 [${citation.number}]`}）` : '（未匹配到引用位置，显示全文）' : '（真实切片预览）'}</span>
           </div>
           <div className="space-y-4">
             {!ready && <div className="rounded-card border border-edge bg-canvas p-5 text-sm">正在加载真实原文切片…</div>}

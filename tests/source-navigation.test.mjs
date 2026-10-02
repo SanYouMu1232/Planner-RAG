@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { locateCitation, findCitationDocument, parseTableRows } from '../src/lib/citationLocation.ts'
-import { getDocumentFileUrl } from '../src/api/client.ts'
+import { locateCitation, findCitationDocument, findCitationInReuploads, parseTableRows } from '../src/lib/citationLocation.ts'
+import { ApiError, getDocument, getDocumentFileUrl } from '../src/api/client.ts'
 
 const first = { id: 'first', chunkType: 'child', text: '封面', section: '正文' }
 const table = { id: 'table', parentId: 'parent', chunkType: 'table', text: '| 专项规划 | 衔接情况 |\n| 城乡消防专项规划 | 已衔接 |', section: '专项规划' }
@@ -32,6 +32,45 @@ test('legacy filename references must uniquely identify a document', () => {
   assert.equal(findCitationDocument([doc, { ...doc, id: 'two' }], citation), undefined)
   assert.equal(findCitationDocument([{ ...doc, fileName: '旧规划.docx' }], citation), undefined)
 })
+test('deleted citations recover only a unique quotation in the same project and knowledge base', () => {
+  const citation = { documentId: 'old', documentName: '规划.docx', knowledgeBase: 'project', quote: '落实高原地区重要交通节点建设和公共服务设施布局要求。' }
+  const current = { id: 'new', fileName: '规划.docx', knowledgeBase: 'project', projectId: 'p1', parseStatus: 'ready', isUsable: true }
+  const otherProject = { ...current, id: 'other-project', projectId: 'p2' }
+  const general = { ...current, id: 'general', knowledgeBase: 'general', projectId: undefined }
+  const blocks = new Map([
+    ['new', [{ id: 'new-chunk', chunkType: 'child', text: '规划要求：落实高原地区重要交通节点建设和公共服务设施布局要求。' }]],
+    ['other-project', [{ id: 'other-chunk', chunkType: 'child', text: citation.quote }]],
+    ['general', [{ id: 'general-chunk', chunkType: 'child', text: citation.quote }]],
+  ])
+  assert.deepEqual(findCitationInReuploads([current, otherProject, general], citation, 'p1', blocks), { document: current, chunkId: 'new-chunk' })
+  assert.equal(findCitationInReuploads([otherProject, general], citation, 'p1', blocks), undefined)
+})
+
+test('deleted citations do not guess when text changed, is short, or appears twice', () => {
+  const doc = { id: 'new', fileName: '规划.docx', knowledgeBase: 'project', projectId: 'p1', parseStatus: 'ready', isUsable: true }
+  const quote = '落实高原地区重要交通节点建设和公共服务设施布局要求。'
+  const citation = { documentId: 'old', documentName: doc.fileName, knowledgeBase: 'project', quote }
+  assert.equal(findCitationInReuploads([doc], citation, 'p1', new Map([['new', [{ id: 'a', chunkType: 'child', text: '内容已改写。' }]]])), undefined)
+  assert.equal(findCitationInReuploads([doc], { ...citation, quote: '一般要求' }, 'p1', new Map([['new', [{ id: 'a', chunkType: 'child', text: '一般要求' }]]])), undefined)
+  assert.equal(findCitationInReuploads([doc], citation, 'p1', new Map([['new', [
+    { id: 'a', chunkType: 'child', text: quote },
+    { id: 'b', chunkType: 'child', text: quote },
+  ]]])), undefined)
+  assert.equal(findCitationInReuploads([{ ...doc, id: 'old' }], citation, 'p1', new Map([['old', [{ id: 'a', chunkType: 'child', text: quote }]]])), undefined)
+})
+
+test('document lookup exposes HTTP status so only a missing original can recover', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    for (const status of [404, 500]) {
+      globalThis.fetch = async () => new Response(JSON.stringify({ detail: '读取失败' }), { status, headers: { 'Content-Type': 'application/json' } })
+      await assert.rejects(getDocument('old'), error => error instanceof ApiError && error.status === status)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('invalid or object-based OCR tables fall back safely to text', () => {
   for (const value of ['null', '{', '{"rows":{}}', '{"cells":[{"text":"甲"}]}', '{"rows":[]}']) assert.equal(parseTableRows(value), null)
   assert.deepEqual(parseTableRows('{"rows":[["类别", "数量"],[{"text":"人口"},31400]]}'), [['类别', '数量'], ['人口', '31400']])

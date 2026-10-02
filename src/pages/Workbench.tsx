@@ -6,7 +6,7 @@ import UploadModal from '../components/UploadModal'
 import ResearchDrawer from '../components/ResearchDrawer'
 import DocumentDrawer from '../components/DocumentDrawer'
 import StatusBadge from '../components/StatusBadge'
-import { findCitationDocument } from '../lib/citationLocation'
+import { findCitationDocument, findCitationInReuploads } from '../lib/citationLocation'
 
 interface Props { project:Project;documents:KnowledgeDocument[];draftQuestion:string;apiConfigured:boolean;activeConversation:ConversationSession|null;onSubmitQuestion:(q:string)=>Promise<{sessionId:string;turnId:string}>;onMarkTurnDone:(sid:string,tid:string)=>void;onStoreTurnResult:(sid:string,tid:string,r:{answer:string;citations:Citation[];failed?:boolean})=>void;onUpdateTurnProgress:(sid:string,tid:string,r:{answer:string;citations:Citation[]})=>void;onResetConversation:()=>void;onOpenKnowledgeBase:()=>void;onRequireApi:()=>void;onDraftQuestionConsumed:()=>void;onAddDocument:(doc:KnowledgeDocument)=>void }
 type AnswerTab='answer'|'citations'|'summaries'|'research'
@@ -14,18 +14,36 @@ const sources:{value:KnowledgeSource;label:string}[]=[{value:'both',label:'当�
 const tabs:{key:AnswerTab;label:string}[]=[{key:'answer',label:'回答'},{key:'citations',label:'引用原文'},{key:'summaries',label:'文档摘要'},{key:'research',label:'网络检索'}]
 export default function Workbench(props:Props){
  const {project,documents,draftQuestion,activeConversation,onSubmitQuestion,onMarkTurnDone,onStoreTurnResult,onUpdateTurnProgress,onResetConversation,onOpenKnowledgeBase,onDraftQuestionConsumed,onAddDocument}=props
- const [question,setQuestion]=useState(''),[source,setSource]=useState<KnowledgeSource>('both'),[showUpload,setShowUpload]=useState(false),[showResearch,setShowResearch]=useState(false),[searchKeyword,setSearchKeyword]=useState(''),[selected,setSelected]=useState<{document:KnowledgeDocument;citation:Citation}|null>(null),[submitting,setSubmitting]=useState(false),[toolState,setToolState]=useState('')
+ const [question,setQuestion]=useState(''),[source,setSource]=useState<KnowledgeSource>('both'),[showUpload,setShowUpload]=useState(false),[showResearch,setShowResearch]=useState(false),[searchKeyword,setSearchKeyword]=useState(''),[selected,setSelected]=useState<{document:KnowledgeDocument;citation:Citation;recovered:boolean}|null>(null),[submitting,setSubmitting]=useState(false),[toolState,setToolState]=useState('')
  const ref=useRef<HTMLDivElement|null>(null), turns=activeConversation?.turns??[]
  const submittingRef = useRef(false), sourceRequest = useRef(0)
  useEffect(() => () => { sourceRequest.current += 1 }, [])
+ useEffect(() => { sourceRequest.current += 1 }, [project.id])
  const openCitation = async (citation: Citation) => {
    const request = ++sourceRequest.current
    try {
-     let doc = findCitationDocument(documents.filter(d => d.knowledgeBase === 'general' || d.projectId === project.id), citation)
-     if (!doc && citation.documentId) doc = await api.getDocument(citation.documentId)
+     let doc: KnowledgeDocument | undefined
+     let recovered = false
+     if (citation.documentId) {
+       try {
+         doc = await api.getDocument(citation.documentId)
+       } catch (error) {
+         if (!(error instanceof api.ApiError && error.status === 404)) throw error
+         const candidates = await api.listDocuments({knowledgeBase:citation.knowledgeBase,projectId:citation.knowledgeBase==='project'?project.id:undefined})
+         const sameName = candidates.filter(candidate => candidate.fileName === citation.documentName && candidate.id !== citation.documentId && candidate.parseStatus === 'ready')
+         const loaded = await Promise.all(sameName.map(async candidate => [candidate.id, await api.getDocumentChunks(candidate.id)] as const))
+         const chunks = new Map<string, api.DocumentChunk[]>(loaded)
+         const match = findCitationInReuploads(sameName, citation, project.id, chunks)
+         if (!match) throw new Error('旧版资料已删除；未在重传资料中找到唯一且相同的引用文字，请手动核对。')
+         doc = match.document
+         recovered = true
+       }
+     } else {
+       doc = findCitationDocument(documents.filter(d => d.knowledgeBase === 'general' || d.projectId === project.id), citation)
+     }
      if (request !== sourceRequest.current) return
      if (!doc || (doc.knowledgeBase === 'project' && doc.projectId !== project.id)) throw new Error('引用资料已删除、不可访问或存在同名文件，请在知识库中核对。')
-     setSelected({ document: doc, citation })
+     setSelected({ document: doc, citation, recovered })
    } catch (error) {
      if (request === sourceRequest.current) alert(error instanceof Error ? error.message : '打开原文失败')
    }
@@ -63,7 +81,7 @@ export default function Workbench(props:Props){
  const openResearch=(k?:string)=>{setSearchKeyword(k??searchKeyword??question);setShowResearch(true)}
  return <main className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-canvas"><div ref={ref} className="chat-scroll-area min-h-0 flex-1 overflow-y-auto overscroll-contain"><div className="mx-auto flex min-h-full max-w-[1060px] flex-col px-8 py-8">{!turns.length&&<><section className="text-center"><h2 className="text-[30px] font-light text-[#002440]">当前项目：{project.name}</h2><p className="mt-2 text-base text-foreground-secondary">围绕项目资料和通用政策提问；系统默认联合检索双层知识库。</p></section>{!hasDocs&&<section className="mt-8 rounded-card border border-dashed border-edge bg-white p-6 text-center"><h3 className="font-semibold">还没有可用资料</h3><p className="mt-2 text-sm text-foreground-secondary">可以上传 Word、PDF、PPT、Excel，或先联网查找公开资料并由你确认后入库。</p><div className="mt-5 flex justify-center gap-3"><button onClick={()=>setShowUpload(true)} className="btn-primary"><Upload size={16}/>上传资料</button><button onClick={()=>openResearch(question)} className="btn-secondary"><Search size={16}/>联网搜索</button></div></section>}</>}{turns.length>0&&<section className="space-y-8 pt-2">{turns.map(t=><TurnCard key={t.id} turn={t} docs={[...projectDocs,...generalDocs]} openCitation={openCitation} searchKeyword={searchKeyword||t.question} setSearchKeyword={setSearchKeyword} openResearch={openResearch} reset={onResetConversation}/>)}</section>}</div></div>
  <section className="shrink-0 border-t border-edge bg-canvas/95 px-6 pt-4 pb-2"><div className="mx-auto max-w-[1060px]"><div className="rounded-xl border border-edge bg-white px-4 py-3 shadow-card"><div className="flex items-center gap-3 rounded-xl border border-edge px-3 py-2 focus-within:border-primary/40"><textarea value={question} onChange={e=>setQuestion(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing&&e.nativeEvent.keyCode!==229){e.preventDefault();void ask()}}} rows={2} className="min-h-10 flex-1 resize-none border-0 bg-transparent text-sm focus:outline-none" placeholder="请输入问题；Enter 发送，Shift+Enter 换行"/><button onClick={()=>void ask()} disabled={!question.trim()||answering} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm text-white disabled:opacity-50">{answering?<Loader2 size={16} className="animate-spin"/>:<Send size={16}/>}发送</button></div><div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-dashed border-edge pt-3"><div className="flex flex-wrap gap-2 text-xs">{sources.map(s=><button key={s.value} onClick={()=>setSource(s.value)} className={`rounded-full border px-3 py-1.5 ${source===s.value?'border-primary bg-primary-light text-primary':'border-edge bg-white text-foreground-secondary'}`}>{s.label}</button>)}</div><div className="flex gap-2"><button onClick={()=>setShowUpload(true)} className="btn-secondary"><Upload size={16}/>上传资料</button><button onClick={()=>openResearch(question)} className="btn-secondary"><Search size={16}/>搜索资料</button></div></div></div><p className="mt-2 text-center text-xs text-foreground-muted">{toolState||'有资料时会给出可点击引用；知识库没命中时也会按常规对话继续回答并说明边界。'}</p></div></section>
- <UploadModal open={showUpload} onClose={()=>setShowUpload(false)} projectId={project.id} defaultKnowledgeBase="project" onUploaded={onAddDocument} existingDocuments={documents} onViewKnowledge={onOpenKnowledgeBase}/><ResearchDrawer open={showResearch} onClose={()=>setShowResearch(false)} projectId={project.id} defaultKeyword={searchKeyword} onAddDocument={onAddDocument}/><DocumentDrawer document={documents.find(doc=>doc.id===selected?.document.id)??selected?.document??null} citation={selected?.citation} onClose={()=>{sourceRequest.current+=1;setSelected(null)}}/></main>
+ <UploadModal open={showUpload} onClose={()=>setShowUpload(false)} projectId={project.id} defaultKnowledgeBase="project" onUploaded={onAddDocument} existingDocuments={documents} onViewKnowledge={onOpenKnowledgeBase}/><ResearchDrawer open={showResearch} onClose={()=>setShowResearch(false)} projectId={project.id} defaultKeyword={searchKeyword} onAddDocument={onAddDocument}/><DocumentDrawer document={documents.find(doc=>doc.id===selected?.document.id)??selected?.document??null} citation={selected?.citation} recovered={selected?.recovered} onClose={()=>{sourceRequest.current+=1;setSelected(null)}}/></main>
 }
 function TurnCard({turn,docs,openCitation,searchKeyword,setSearchKeyword,openResearch,reset}:{turn:ChatTurn;docs:KnowledgeDocument[];openCitation:(c:Citation)=>Promise<void>;searchKeyword:string;setSearchKeyword:(s:string)=>void;openResearch:(s?:string)=>void;reset:()=>void}){
  const [tab,setTab] = useState<AnswerTab>('answer'), [copied,setCopied] = useState(false)

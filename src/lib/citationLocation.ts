@@ -10,6 +10,30 @@ export function findCitationDocument(documents: KnowledgeDocument[], citation: C
   return matches.length === 1 ? matches[0] : undefined
 }
 
+/** Recover a deleted citation only when its saved quote occurs in exactly one re-uploaded block. */
+export function findCitationInReuploads(
+  documents: KnowledgeDocument[],
+  citation: Citation,
+  projectId: string,
+  chunksByDocument: ReadonlyMap<string, readonly DocumentChunk[]>,
+): { document: KnowledgeDocument; chunkId: string } | undefined {
+  if (!citation.documentId || !citation.documentName) return undefined
+  const quote = normalize(citation.quote)
+  if (quote.length < 24) return undefined
+  let found: { document: KnowledgeDocument; chunkId: string } | undefined
+  for (const document of documents) {
+    if (document.id === citation.documentId || document.fileName !== citation.documentName || document.knowledgeBase !== citation.knowledgeBase) continue
+    if (document.knowledgeBase === 'project' && document.projectId !== projectId) continue
+    if (document.parseStatus !== 'ready' || document.isUsable === false) continue
+    for (const chunk of chunksByDocument.get(document.id) ?? []) {
+      if (chunk.chunkType === 'parent' || !normalize(chunk.text).includes(quote)) continue
+      if (found) return undefined
+      found = { document, chunkId: chunk.id }
+    }
+  }
+  return found
+}
+
 function matchQuote(chunks: DocumentChunk[], quote: string): DocumentChunk | undefined {
   const needle = normalize(quote)
   if (!needle) return undefined
